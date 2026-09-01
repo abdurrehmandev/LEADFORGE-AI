@@ -1,0 +1,49 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper function
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Workspaces
+    match /workspaces/{workspaceId} {
+      allow read, write: if true; // Allows web clients and server backend to read/write workspace records
+      
+      match /leads/{leadId} {
+        allow read, write: if true;
+      }
+      match /conversations/{convId} {
+        allow read, write: if true;
+      }
+      match /appointments/{aptId} {
+        allow read, write: if true;
+      }
+      match /workflows/{wfId} {
+        allow read, write: if true;
+      }
+      match /workflow_executions/{execId} {
+        allow read, write: if true;
+      }
+      match /notifications/{notifId} {
+        allow read, write: if true;
+      }
+      match /audit_logs/{logId} {
+        allow read, write: if true;
+      }
+      match /integrations/{intId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    // Fallback collection match
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

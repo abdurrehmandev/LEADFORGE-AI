@@ -1,0 +1,178 @@
+{
+  "entities": {
+    "workspaces": {
+      "title": "workspaces",
+      "description": "Multi-tenant business organizations and industry configurations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "slug": { "type": "string" },
+        "industry": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "members": { "type": "array" },
+        "aiConfig": { "type": "object" },
+        "automationMode": { "type": "string" },
+        "automationsPaused": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "isDemo": { "type": "boolean" }
+      },
+      "required": ["id", "name", "ownerId", "industry"]
+    },
+    "users": {
+      "title": "users",
+      "description": "User profiles and workspace access mapping",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "currentWorkspaceId": { "type": "string" },
+        "workspaces": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "email", "name"]
+    },
+    "leads": {
+      "title": "leads",
+      "description": "Captured prospect records and AI qualification ratings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "source": { "type": "string" },
+        "status": { "type": "string" },
+        "temperature": { "type": "string" },
+        "score": { "type": "number" },
+        "service": { "type": "string" },
+        "location": { "type": "string" },
+        "budget": { "type": "string" },
+        "urgency": { "type": "string" },
+        "tags": { "type": "array" },
+        "aiAnalysis": { "type": "object" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "name", "status"]
+    },
+    "conversations": {
+      "title": "conversations",
+      "description": "Omnichannel message threads per lead",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "leadId": { "type": "string" },
+        "leadName": { "type": "string" },
+        "channel": { "type": "string" },
+        "status": { "type": "string" },
+        "messages": { "type": "array" },
+        "updatedAt": { "type": "string" },
+        "unreadByAgent": { "type": "boolean" }
+      },
+      "required": ["id", "workspaceId", "leadId"]
+    },
+    "appointments": {
+      "title": "appointments",
+      "description": "Scheduled customer consultations and site visits",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "leadId": { "type": "string" },
+        "leadName": { "type": "string" },
+        "service": { "type": "string" },
+        "assignedAgentId": { "type": "string" },
+        "assignedAgentName": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "status": { "type": "string" },
+        "locationType": { "type": "string" },
+        "locationDetails": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "leadId", "startTime", "endTime"]
+    },
+    "workflows": {
+      "title": "workflows",
+      "description": "Automated trigger-action sequences",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "name": { "type": "string" },
+        "trigger": { "type": "string" },
+        "conditions": { "type": "array" },
+        "actions": { "type": "array" },
+        "isEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "name", "trigger"]
+    },
+    "workflow_executions": {
+      "title": "workflow_executions",
+      "description": "Execution history logs for workflow runs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "workflowId": { "type": "string" },
+        "workflowName": { "type": "string" },
+        "leadId": { "type": "string" },
+        "leadName": { "type": "string" },
+        "status": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "workflowId", "status"]
+    },
+    "notifications": {
+      "title": "notifications",
+      "description": "System and lead activity notifications",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "isRead": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "title", "message"]
+    },
+    "audit_logs": {
+      "title": "audit_logs",
+      "description": "Compliance audit trail of user and AI operations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "action", "timestamp"]
+    },
+    "integrations": {
+      "title": "integrations",
+      "description": "Connector and gateway configurations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "workspaceId": { "type": "string" },
+        "type": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string" },
+        "config": { "type": "object" }
+      },
+      "required": ["id", "workspaceId", "type", "name"]
+    }
+  }
+}

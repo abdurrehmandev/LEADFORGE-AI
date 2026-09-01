@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { AuthProvider } from './context/AuthContext';
 import { WorkspaceProvider, useWorkspace } from './context/WorkspaceContext';
 import { NotificationProvider } from './context/NotificationContext';
 import { Navbar } from './components/common/Navbar';
@@ -70,9 +71,11 @@ const AppContent: React.FC = () => {
 export default function App() {
   return (
     <NotificationProvider>
-      <WorkspaceProvider>
-        <AppContent />
-      </WorkspaceProvider>
+      <AuthProvider>
+        <WorkspaceProvider>
+          <AppContent />
+        </WorkspaceProvider>
+      </AuthProvider>
     </NotificationProvider>
   );
 }

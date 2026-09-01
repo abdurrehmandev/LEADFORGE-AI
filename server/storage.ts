@@ -1,3 +1,7 @@
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore, Firestore } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
+import firebaseConfig from '../firebase-applet-config.json';
 import {
   Workspace,
   Lead,
@@ -22,7 +26,25 @@ import {
   DEMO_INTEGRATIONS,
 } from '../src/data/demoSeedData';
 
-class MultiTenantStorage {
+let adminDb: Firestore | null = null;
+
+export function getAdminFirestore(): Firestore | null {
+  if (adminDb) return adminDb;
+  try {
+    if (!getApps().length) {
+      initializeApp({
+        projectId: firebaseConfig.projectId,
+      });
+    }
+    adminDb = getFirestore(firebaseConfig.firestoreDatabaseId || undefined);
+    return adminDb;
+  } catch (err) {
+    console.warn('[Firestore] Failed to initialize Firebase Admin, using memory cache:', err);
+    return null;
+  }
+}
+
+export class PersistentMultiTenantStorage {
   private workspaces: Map<string, Workspace> = new Map();
   private leads: Map<string, Lead> = new Map();
   private conversations: Map<string, Conversation> = new Map();
@@ -33,15 +55,15 @@ class MultiTenantStorage {
   private auditLogs: Map<string, AuditLog> = new Map();
   private integrations: Map<string, IntegrationConfig> = new Map();
   private processedWebhookIds: Set<string> = new Set();
+  private initialized = false;
 
   constructor() {
-    this.seedDemoData();
+    this.seedDemoDataLocal();
+    this.initFirestoreSync();
   }
 
-  public seedDemoData() {
-    // Clear existing demo entries
+  private seedDemoDataLocal() {
     this.workspaces.set(DEMO_WORKSPACE.id, JSON.parse(JSON.stringify(DEMO_WORKSPACE)));
-    
     DEMO_LEADS.forEach((l) => this.leads.set(l.id, JSON.parse(JSON.stringify(l))));
     DEMO_CONVERSATIONS.forEach((c) => this.conversations.set(c.id, JSON.parse(JSON.stringify(c))));
     DEMO_APPOINTMENTS.forEach((a) => this.appointments.set(a.id, JSON.parse(JSON.stringify(a))));
@@ -50,6 +72,117 @@ class MultiTenantStorage {
     DEMO_NOTIFICATIONS.forEach((n) => this.notifications.set(n.id, JSON.parse(JSON.stringify(n))));
     DEMO_AUDIT_LOGS.forEach((al) => this.auditLogs.set(al.id, JSON.parse(JSON.stringify(al))));
     DEMO_INTEGRATIONS.forEach((i) => this.integrations.set(i.id, JSON.parse(JSON.stringify(i))));
+  }
+
+  private async initFirestoreSync() {
+    try {
+      const fs = getAdminFirestore();
+      if (!fs) return;
+
+      // Check if demo workspace exists in Firestore, if not sync initial state
+      const wsDoc = await fs.collection('workspaces').doc(DEMO_WORKSPACE.id).get();
+      if (!wsDoc.exists) {
+        await this.syncAllToFirestore();
+      } else {
+        // Hydrate from Firestore
+        await this.hydrateFromFirestore();
+      }
+      this.initialized = true;
+      console.log('[Firestore] Multi-tenant storage connected and synced with Firestore.');
+    } catch (err) {
+      console.warn('[Firestore] Sync error, operating with synchronized memory layer:', err);
+    }
+  }
+
+  public async syncAllToFirestore() {
+    const fs = getAdminFirestore();
+    if (!fs) return;
+
+    const batch = fs.batch();
+
+    // Workspaces
+    for (const ws of this.workspaces.values()) {
+      batch.set(fs.collection('workspaces').doc(ws.id), ws);
+    }
+
+    // Leads
+    for (const lead of this.leads.values()) {
+      batch.set(fs.collection('workspaces').doc(lead.workspaceId).collection('leads').doc(lead.id), lead);
+    }
+
+    // Conversations
+    for (const conv of this.conversations.values()) {
+      batch.set(fs.collection('workspaces').doc(conv.workspaceId).collection('conversations').doc(conv.id), conv);
+    }
+
+    // Appointments
+    for (const apt of this.appointments.values()) {
+      batch.set(fs.collection('workspaces').doc(apt.workspaceId).collection('appointments').doc(apt.id), apt);
+    }
+
+    // Workflows
+    for (const wf of this.workflows.values()) {
+      batch.set(fs.collection('workspaces').doc(wf.workspaceId).collection('workflows').doc(wf.id), wf);
+    }
+
+    // Executions
+    for (const exec of this.workflowExecutions.values()) {
+      batch.set(fs.collection('workspaces').doc(exec.workspaceId).collection('workflow_executions').doc(exec.id), exec);
+    }
+
+    // Notifications
+    for (const notif of this.notifications.values()) {
+      batch.set(fs.collection('workspaces').doc(notif.workspaceId).collection('notifications').doc(notif.id), notif);
+    }
+
+    // Audit logs
+    for (const log of this.auditLogs.values()) {
+      batch.set(fs.collection('workspaces').doc(log.workspaceId).collection('audit_logs').doc(log.id), log);
+    }
+
+    // Integrations
+    for (const integ of this.integrations.values()) {
+      batch.set(fs.collection('workspaces').doc(integ.workspaceId).collection('integrations').doc(integ.id), integ);
+    }
+
+    await batch.commit();
+  }
+
+  public async hydrateFromFirestore() {
+    const fs = getAdminFirestore();
+    if (!fs) return;
+
+    const wsSnap = await fs.collection('workspaces').get();
+    for (const doc of wsSnap.docs) {
+      const ws = doc.data() as Workspace;
+      this.workspaces.set(ws.id, ws);
+
+      // Hydrate subcollections
+      const [leadsSnap, convsSnap, aptsSnap, wfsSnap, execsSnap, notifsSnap, logsSnap, integsSnap] = await Promise.all([
+        fs.collection('workspaces').doc(ws.id).collection('leads').get(),
+        fs.collection('workspaces').doc(ws.id).collection('conversations').get(),
+        fs.collection('workspaces').doc(ws.id).collection('appointments').get(),
+        fs.collection('workspaces').doc(ws.id).collection('workflows').get(),
+        fs.collection('workspaces').doc(ws.id).collection('workflow_executions').get(),
+        fs.collection('workspaces').doc(ws.id).collection('notifications').get(),
+        fs.collection('workspaces').doc(ws.id).collection('audit_logs').get(),
+        fs.collection('workspaces').doc(ws.id).collection('integrations').get(),
+      ]);
+
+      leadsSnap.docs.forEach((d) => this.leads.set(d.id, d.data() as Lead));
+      convsSnap.docs.forEach((d) => this.conversations.set(d.id, d.data() as Conversation));
+      aptsSnap.docs.forEach((d) => this.appointments.set(d.id, d.data() as Appointment));
+      wfsSnap.docs.forEach((d) => this.workflows.set(d.id, d.data() as Workflow));
+      execsSnap.docs.forEach((d) => this.workflowExecutions.set(d.id, d.data() as WorkflowExecution));
+      notifsSnap.docs.forEach((d) => this.notifications.set(d.id, d.data() as Notification));
+      logsSnap.docs.forEach((d) => this.auditLogs.set(d.id, d.data() as AuditLog));
+      integsSnap.docs.forEach((d) => this.integrations.set(d.id, d.data() as IntegrationConfig));
+    }
+  }
+
+  public seedDemoData() {
+    this.seedDemoDataLocal();
+    this.syncAllToFirestore().catch((e) => console.warn('[Firestore] Sync seed error:', e));
   }
 
   // --- WORKSPACE ---
@@ -64,6 +197,11 @@ class MultiTenantStorage {
   public createWorkspace(ws: Workspace): Workspace {
     this.workspaces.set(ws.id, ws);
     this.logAudit(ws.id, 'usr_owner_1', 'System Owner', 'SETTINGS_CHANGED', 'settings', ws.id, `Created new workspace: ${ws.name}`);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(ws.id).set(ws).catch(console.warn);
+    }
     return ws;
   }
 
@@ -72,6 +210,11 @@ class MultiTenantStorage {
     if (!ws) return undefined;
     const updated = { ...ws, ...updates, updatedAt: new Date().toISOString() };
     this.workspaces.set(workspaceId, updated);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).set(updated, { merge: true }).catch(console.warn);
+    }
     return updated;
   }
 
@@ -94,10 +237,15 @@ class MultiTenantStorage {
     this.leads.set(lead.id, lead);
     this.logAudit(lead.workspaceId, 'system', actorName, 'LEAD_CREATED', 'lead', lead.id, `Created lead ${lead.name} (${lead.service || 'General'}) with score ${lead.score}`);
     
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(lead.workspaceId).collection('leads').doc(lead.id).set(lead).catch(console.warn);
+    }
+
     // Create corresponding conversation
     const convId = `conv_${lead.id}`;
     if (!this.conversations.has(convId)) {
-      this.conversations.set(convId, {
+      const conv: Conversation = {
         id: convId,
         workspaceId: lead.workspaceId,
         leadId: lead.id,
@@ -115,7 +263,11 @@ class MultiTenantStorage {
         ],
         updatedAt: lead.createdAt,
         unreadByAgent: true
-      });
+      };
+      this.conversations.set(convId, conv);
+      if (fs) {
+        fs.collection('workspaces').doc(lead.workspaceId).collection('conversations').doc(conv.id).set(conv).catch(console.warn);
+      }
     }
 
     return lead;
@@ -128,6 +280,11 @@ class MultiTenantStorage {
     const updated = { ...lead, ...updates, updatedAt: new Date().toISOString() };
     this.leads.set(leadId, updated);
     this.logAudit(workspaceId, 'usr_agent', actorName, 'LEAD_UPDATED', 'lead', leadId, `Updated lead ${lead.name} status to ${updated.status} (Score ${updated.score})`);
+
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('leads').doc(leadId).set(updated, { merge: true }).catch(console.warn);
+    }
     return updated;
   }
 
@@ -135,6 +292,11 @@ class MultiTenantStorage {
     const lead = this.getLead(workspaceId, leadId);
     if (!lead) return false;
     this.leads.delete(leadId);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('leads').doc(leadId).delete().catch(console.warn);
+    }
     return true;
   }
 
@@ -175,10 +337,15 @@ class MultiTenantStorage {
     conv.unreadByAgent = message.sender === 'lead';
     this.conversations.set(conv.id, conv);
 
-    // Update lead last contacted
     lead.lastContactedAt = message.timestamp;
     lead.updatedAt = new Date().toISOString();
     this.leads.set(lead.id, lead);
+
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('conversations').doc(conv.id).set(conv).catch(console.warn);
+      fs.collection('workspaces').doc(workspaceId).collection('leads').doc(lead.id).set(lead, { merge: true }).catch(console.warn);
+    }
 
     return { conversation: conv, lead };
   }
@@ -193,7 +360,6 @@ class MultiTenantStorage {
   public createAppointment(apt: Appointment): Appointment {
     this.appointments.set(apt.id, apt);
     
-    // Auto-update lead status
     const lead = this.getLead(apt.workspaceId, apt.leadId);
     if (lead) {
       lead.status = 'APPOINTMENT_BOOKED';
@@ -204,7 +370,6 @@ class MultiTenantStorage {
 
     this.logAudit(apt.workspaceId, 'system', 'Scheduler', 'APPOINTMENT_CREATED', 'appointment', apt.id, `Booked appointment for ${apt.leadName} on ${apt.startTime}`);
     
-    // Create in-app notification
     this.createNotification({
       id: `notif_${Date.now()}`,
       workspaceId: apt.workspaceId,
@@ -216,6 +381,14 @@ class MultiTenantStorage {
       createdAt: new Date().toISOString()
     });
 
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(apt.workspaceId).collection('appointments').doc(apt.id).set(apt).catch(console.warn);
+      if (lead) {
+        fs.collection('workspaces').doc(apt.workspaceId).collection('leads').doc(lead.id).set(lead, { merge: true }).catch(console.warn);
+      }
+    }
+
     return apt;
   }
 
@@ -224,6 +397,11 @@ class MultiTenantStorage {
     if (!apt || apt.workspaceId !== workspaceId) return undefined;
     const updated = { ...apt, ...updates };
     this.appointments.set(aptId, updated);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('appointments').doc(aptId).set(updated, { merge: true }).catch(console.warn);
+    }
     return updated;
   }
 
@@ -234,6 +412,10 @@ class MultiTenantStorage {
 
   public saveWorkflow(wf: Workflow): Workflow {
     this.workflows.set(wf.id, wf);
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(wf.workspaceId).collection('workflows').doc(wf.id).set(wf).catch(console.warn);
+    }
     return wf;
   }
 
@@ -242,6 +424,11 @@ class MultiTenantStorage {
     if (!wf || wf.workspaceId !== workspaceId) return undefined;
     wf.isEnabled = isEnabled;
     this.workflows.set(wfId, wf);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('workflows').doc(wfId).set({ isEnabled }, { merge: true }).catch(console.warn);
+    }
     return wf;
   }
 
@@ -253,6 +440,10 @@ class MultiTenantStorage {
 
   public recordWorkflowExecution(exec: WorkflowExecution) {
     this.workflowExecutions.set(exec.id, exec);
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(exec.workspaceId).collection('workflow_executions').doc(exec.id).set(exec).catch(console.warn);
+    }
   }
 
   // --- NOTIFICATIONS ---
@@ -264,6 +455,10 @@ class MultiTenantStorage {
 
   public createNotification(notif: Notification): Notification {
     this.notifications.set(notif.id, notif);
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(notif.workspaceId).collection('notifications').doc(notif.id).set(notif).catch(console.warn);
+    }
     return notif;
   }
 
@@ -272,6 +467,11 @@ class MultiTenantStorage {
     if (!notif || notif.workspaceId !== workspaceId) return false;
     notif.isRead = true;
     this.notifications.set(notifId, notif);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('notifications').doc(notifId).set({ isRead: true }, { merge: true }).catch(console.warn);
+    }
     return true;
   }
 
@@ -279,6 +479,15 @@ class MultiTenantStorage {
     this.notifications.forEach((n) => {
       if (n.workspaceId === workspaceId) n.isRead = true;
     });
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('notifications').where('isRead', '==', false).get().then(snap => {
+        const b = fs.batch();
+        snap.docs.forEach(doc => b.update(doc.ref, { isRead: true }));
+        b.commit().catch(console.warn);
+      }).catch(console.warn);
+    }
   }
 
   // --- INTEGRATIONS ---
@@ -292,6 +501,11 @@ class MultiTenantStorage {
     const updated = { ...integration, ...updates };
     this.integrations.set(intId, updated);
     this.logAudit(workspaceId, 'usr_owner_1', 'Admin', 'INTEGRATION_CONFIGURED', 'integration', intId, `Updated configuration for ${updated.name}`);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('integrations').doc(intId).set(updated, { merge: true }).catch(console.warn);
+    }
     return updated;
   }
 
@@ -323,6 +537,11 @@ class MultiTenantStorage {
       timestamp: new Date().toISOString()
     };
     this.auditLogs.set(log.id, log);
+    
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('audit_logs').doc(log.id).set(log).catch(console.warn);
+    }
   }
 
   // --- IDEMPOTENT WEBHOOK HANDLING ---
@@ -331,7 +550,6 @@ class MultiTenantStorage {
       return true;
     }
     this.processedWebhookIds.add(idempotencyKey);
-    // Keep size bounded to last 10,000 keys
     if (this.processedWebhookIds.size > 10000) {
       const first = this.processedWebhookIds.values().next().value;
       if (first) this.processedWebhookIds.delete(first);
@@ -356,4 +574,4 @@ class MultiTenantStorage {
   }
 }
 
-export const db = new MultiTenantStorage();
+export const db = new PersistentMultiTenantStorage();

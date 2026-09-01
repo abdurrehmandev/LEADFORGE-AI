@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useWorkspace } from '../../context/WorkspaceContext';
+import { useAuth } from '../../context/AuthContext';
 import { NotificationDrawer } from './NotificationDrawer';
 import {
   Pause,
@@ -11,7 +12,10 @@ import {
   ChevronDown,
   Building2,
   Code2,
-  Globe
+  Globe,
+  User,
+  LogOut,
+  LogIn
 } from 'lucide-react';
 import { UserRole } from '../../types';
 
@@ -31,8 +35,11 @@ export const Navbar: React.FC<{ onOpenWidget: () => void }> = ({ onOpenWidget })
     isDemoMode,
   } = useWorkspace();
 
+  const { user, signInWithGoogle, logout } = useAuth();
+
   const [showWorkspaceDropdown, setShowWorkspaceDropdown] = useState(false);
   const [showRoleDropdown, setShowRoleDropdown] = useState(false);
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
 
   const roles: UserRole[] = ['OWNER', 'ADMIN', 'AGENT', 'VIEWER'];
@@ -228,6 +235,63 @@ export const Navbar: React.FC<{ onOpenWidget: () => void }> = ({ onOpenWidget })
               </span>
             )}
           </button>
+
+          {/* Authentication & User Account Button */}
+          <div className="relative">
+            {user ? (
+              <button
+                onClick={() => setShowUserDropdown(!showUserDropdown)}
+                className="flex items-center gap-2 p-1 pl-2 rounded-sm bg-[#111111] border border-[#1a1a1a] hover:border-[#262626] text-xs text-[#e5e5e5] transition"
+              >
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt={user.displayName || 'User'} className="w-5 h-5 rounded-full object-cover" />
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-[#c5a059] text-black flex items-center justify-center text-[10px] font-bold">
+                    {(user.displayName || user.email || 'U')[0].toUpperCase()}
+                  </div>
+                )}
+                <span className="max-w-[90px] truncate text-[11px] hidden sm:inline">{user.displayName || user.email?.split('@')[0]}</span>
+                <ChevronDown className="w-3 h-3 text-[#737373]" />
+              </button>
+            ) : (
+              <button
+                onClick={() => signInWithGoogle()}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-sm bg-[#171717] border border-[#262626] hover:border-[#c5a059] text-[11px] uppercase tracking-wider text-[#e5e5e5] hover:text-[#c5a059] transition"
+                title="Authenticate to sync multi-tenant workspace to your cloud account"
+              >
+                <LogIn className="w-3.5 h-3.5 text-[#c5a059]" />
+                <span className="hidden sm:inline">Sign In</span>
+              </button>
+            )}
+
+            {showUserDropdown && user && (
+              <div className="absolute right-0 mt-2 w-56 rounded-sm bg-[#0a0a0a] border border-[#1a1a1a] shadow-2xl p-2.5 z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="px-2 py-1.5 border-b border-[#1a1a1a] mb-1">
+                  <p className="text-xs font-semibold text-[#e5e5e5] truncate">{user.displayName || 'Authenticated User'}</p>
+                  <p className="text-[10px] text-[#737373] truncate font-mono">{user.email}</p>
+                </div>
+                <div className="text-[10px] uppercase tracking-widest text-[#737373] px-2 py-1">
+                  Cloud State
+                </div>
+                <div className="px-2 py-1 text-[11px] text-emerald-400 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Firestore Sync Active
+                </div>
+                <div className="border-t border-[#1a1a1a] mt-2 pt-1">
+                  <button
+                    onClick={() => {
+                      logout();
+                      setShowUserDropdown(false);
+                    }}
+                    className="w-full text-left px-2 py-1.5 rounded-sm text-xs text-rose-400 hover:bg-[#171717] flex items-center gap-2 transition"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Sign Out
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
