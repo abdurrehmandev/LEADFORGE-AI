@@ -1,0 +1,7 @@
+{
+  "name": "LEADFORGE AI",
+  "description": "AI-Powered Lead Qualification & Appointment Automation SaaS",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
