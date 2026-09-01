@@ -1,6 +1,7 @@
 import {
   Workspace,
   WorkspaceMember,
+  WorkspaceInvitation,
   Lead,
   Conversation,
   Appointment,
@@ -29,17 +30,15 @@ async function apiFetch<T = any>(
   }
 
   // Obtain fresh Firebase ID Token if user is logged in
-  try {
-    const currentUser = auth.currentUser;
-    if (currentUser) {
+  const currentUser = auth.currentUser;
+  if (currentUser) {
+    try {
       const token = await currentUser.getIdToken();
       headers.set('Authorization', `Bearer ${token}`);
-    } else {
-      // Demo guest token for public evaluation
-      headers.set('Authorization', 'Bearer demo_token');
+    } catch (tokenErr) {
+      console.error('[API] Failed to retrieve fresh Firebase ID token:', tokenErr);
+      throw new Error('Authentication token expired or unavailable. Please sign in again.');
     }
-  } catch (err) {
-    headers.set('Authorization', 'Bearer demo_token');
   }
 
   const response = await fetch(endpoint, {
@@ -62,7 +61,7 @@ async function apiFetch<T = any>(
       throw new Error(errorData.message || 'Forbidden: Insufficient permissions for this workspace.');
     }
     if (response.status === 404) {
-      throw new Error(errorData.error || 'Requested resource was not found.');
+      throw new Error(errorData.error || errorData.message || 'Requested resource was not found.');
     }
     if (response.status === 503) {
       throw new Error('Service is temporarily unavailable.');
@@ -115,8 +114,43 @@ export const api = {
     return data.member;
   },
 
+  async updateMemberRole(id: string, userId: string, role: UserRole): Promise<WorkspaceMember> {
+    const data = await apiFetch<{ member: WorkspaceMember }>(`/api/workspaces/${id}/members/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    });
+    return data.member;
+  },
+
   async removeWorkspaceMember(id: string, userId: string): Promise<void> {
     await apiFetch(`/api/workspaces/${id}/members/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+
+  // --- INVITATIONS ---
+  async getInvitations(workspaceId: string): Promise<WorkspaceInvitation[]> {
+    const data = await apiFetch<{ invitations: WorkspaceInvitation[] }>(`/api/workspaces/${workspaceId}/invitations`);
+    return data.invitations;
+  },
+
+  async createInvitation(workspaceId: string, email: string, role: UserRole): Promise<WorkspaceInvitation> {
+    const data = await apiFetch<{ invitation: WorkspaceInvitation }>(`/api/workspaces/${workspaceId}/invitations`, {
+      method: 'POST',
+      body: JSON.stringify({ email, role }),
+    });
+    return data.invitation;
+  },
+
+  async acceptInvitation(workspaceId: string, invitationId: string): Promise<WorkspaceMember> {
+    const data = await apiFetch<{ member: WorkspaceMember }>(`/api/workspaces/${workspaceId}/invitations/${invitationId}/accept`, {
+      method: 'POST',
+    });
+    return data.member;
+  },
+
+  async revokeInvitation(workspaceId: string, invitationId: string): Promise<void> {
+    await apiFetch(`/api/workspaces/${workspaceId}/invitations/${invitationId}`, {
       method: 'DELETE',
     });
   },
@@ -159,6 +193,13 @@ export const api = {
     await apiFetch(`/api/workspaces/${workspaceId}/leads/${leadId}`, {
       method: 'DELETE',
     });
+  },
+
+  async recalculateLeadScore(workspaceId: string, leadId: string): Promise<Lead> {
+    const data = await apiFetch<{ lead: Lead }>(`/api/workspaces/${workspaceId}/leads/${leadId}/recalculate-score`, {
+      method: 'POST',
+    });
+    return data.lead;
   },
 
   async qualifyLead(workspaceId: string, leadId: string): Promise<{ lead: Lead; aiAnalysis: AIAnalysis }> {

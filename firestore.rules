@@ -1,52 +1,126 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper function
+
+    // Helper functions
     function isAuthenticated() {
       return request.auth != null;
     }
 
-    // Workspaces
-    match /workspaces/{workspaceId} {
-      allow read, write: if true; // Allows web clients and server backend to read/write workspace records
-      
-      match /members/{memberId} {
-        allow read, write: if true;
-      }
-      match /leads/{leadId} {
-        allow read, write: if true;
-      }
-      match /conversations/{convId} {
-        allow read, write: if true;
-      }
-      match /appointments/{aptId} {
-        allow read, write: if true;
-      }
-      match /workflows/{wfId} {
-        allow read, write: if true;
-      }
-      match /workflow_executions/{execId} {
-        allow read, write: if true;
-      }
-      match /notifications/{notifId} {
-        allow read, write: if true;
-      }
-      match /audit_logs/{logId} {
-        allow read, write: if true;
-      }
-      match /integrations/{intId} {
-        allow read, write: if true;
-      }
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
     }
 
-    // Users collection
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isWorkspaceOwner(workspaceId) {
+      return isAuthenticated() &&
+        get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerId == request.auth.uid;
+    }
+
+    function isWorkspaceMember(workspaceId) {
+      return isAuthenticated() && (
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid)) ||
+        isWorkspaceOwner(workspaceId)
+      );
+    }
+
+    // User profiles - PII isolation (Only the user themselves can read and write their profile)
     match /users/{userId} {
-      allow read, write: if true;
+      allow get: if isUser(userId);
+      allow list: if false; // Disallow querying all users
+      allow create: if isUser(userId) && isValidId(userId);
+      allow update: if isUser(userId) && request.resource.data.uid == userId;
+      allow delete: if isUser(userId);
     }
 
-    // Fallback collection match
+    // Workspaces collection
+    match /workspaces/{workspaceId} {
+      allow get: if isAuthenticated() && (
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.isDemo == true ||
+        exists(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
+      );
+      
+      allow list: if isAuthenticated() && (
+        resource.data.ownerId == request.auth.uid ||
+        resource.data.isDemo == true
+      );
+
+      allow create: if isAuthenticated() &&
+        isValidId(workspaceId) &&
+        request.resource.data.ownerId == request.auth.uid;
+
+      allow update: if isAuthenticated() &&
+        isValidId(workspaceId) &&
+        (resource.data.ownerId == request.auth.uid || isWorkspaceOwner(workspaceId));
+
+      allow delete: if isAuthenticated() &&
+        isValidId(workspaceId) &&
+        resource.data.ownerId == request.auth.uid;
+
+      // Workspace Members
+      match /members/{memberId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update, delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // Workspace Leads
+      match /leads/{leadId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update, delete: if isWorkspaceMember(workspaceId);
+      }
+
+      // Workspace Conversations
+      match /conversations/{convId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update, delete: if isWorkspaceMember(workspaceId);
+      }
+
+      // Workspace Appointments
+      match /appointments/{aptId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update, delete: if isWorkspaceMember(workspaceId);
+      }
+
+      // Workspace Workflows
+      match /workflows/{wfId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create, update, delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // Workspace Workflow Executions
+      match /workflow_executions/{execId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow create: if isWorkspaceMember(workspaceId);
+        allow update, delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // Workspace Notifications
+      match /notifications/{notifId} {
+        allow get, list: if isWorkspaceMember(workspaceId);
+        allow update: if isWorkspaceMember(workspaceId);
+        allow create, delete: if isWorkspaceOwner(workspaceId);
+      }
+
+      // Workspace Audit Logs (Read-only for workspace members/owners; writes restricted to system/backend)
+      match /audit_logs/{logId} {
+        allow get, list: if isWorkspaceOwner(workspaceId);
+        allow create, update, delete: if false; // Immutable audit trail
+      }
+
+      // Workspace Integrations
+      match /integrations/{intId} {
+        allow get, list: if isWorkspaceOwner(workspaceId);
+        allow create, update, delete: if isWorkspaceOwner(workspaceId);
+      }
+    }
+
+    // Default Deny Rule for any unmapped paths
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

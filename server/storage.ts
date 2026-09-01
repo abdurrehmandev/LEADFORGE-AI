@@ -4,6 +4,7 @@ import firebaseConfig from '../firebase-applet-config.json';
 import {
   Workspace,
   WorkspaceMember,
+  WorkspaceInvitation,
   UserRole,
   Lead,
   Conversation,
@@ -51,6 +52,7 @@ export function getAdminFirestore(): Firestore | null {
 export class PersistentMultiTenantStorage {
   private workspaces: Map<string, Workspace> = new Map();
   private members: Map<string, Map<string, WorkspaceMember>> = new Map(); // workspaceId -> uid -> member
+  private invitations: Map<string, Map<string, WorkspaceInvitation>> = new Map(); // workspaceId -> invId -> invitation
   private leads: Map<string, Lead> = new Map();
   private conversations: Map<string, Conversation> = new Map();
   private appointments: Map<string, Appointment> = new Map();
@@ -221,9 +223,10 @@ export class PersistentMultiTenantStorage {
   }
 
   public getWorkspacesForUser(userId: string, isDemoUser = false): Workspace[] {
+    const isDemoMode = process.env.DEMO_MODE === 'true';
     const accessible: Workspace[] = [];
     for (const ws of this.workspaces.values()) {
-      if (ws.isDemo || ws.id === 'ws_northstar_solar_demo') {
+      if (isDemoMode && (ws.isDemo || ws.id === 'ws_northstar_solar_demo')) {
         accessible.push(ws);
       } else if (ws.ownerId === userId) {
         accessible.push(ws);
@@ -280,14 +283,89 @@ export class PersistentMultiTenantStorage {
     return member;
   }
 
-  public removeWorkspaceMember(workspaceId: string, userId: string, actorId: string, actorName: string): boolean {
+  public updateWorkspaceMemberRole(
+    workspaceId: string,
+    targetUserId: string,
+    newRole: UserRole,
+    actorId: string,
+    actorName: string,
+    actorRole: UserRole
+  ): { success: boolean; error?: string; member?: WorkspaceMember } {
+    const ws = this.workspaces.get(workspaceId);
+    if (!ws) return { success: false, error: 'Workspace not found' };
+
+    if (actorRole !== 'OWNER' && actorRole !== 'ADMIN') {
+      return { success: false, error: 'Only owners and admins can update member roles' };
+    }
+
+    // Prevent user from changing their own role (avoid privilege escalation or accidental lockout)
+    if (actorId === targetUserId) {
+      return { success: false, error: 'Cannot modify your own role' };
+    }
+
+    // Target cannot be the owner (owner role cannot be changed via member update)
+    if (ws.ownerId === targetUserId) {
+      return { success: false, error: 'Cannot alter role of workspace owner' };
+    }
+
+    // Cannot promote anyone to OWNER
+    if (newRole === 'OWNER') {
+      return { success: false, error: 'Cannot assign OWNER role via member update' };
+    }
+
+    // Admin cannot modify another Admin or Owner
     const memMap = this.members.get(workspaceId);
-    if (!memMap || !memMap.has(userId)) return false;
+    const targetMember = memMap?.get(targetUserId);
+    if (!targetMember) return { success: false, error: 'Member not found' };
+
+    if (actorRole === 'ADMIN' && (targetMember.role === 'ADMIN' || targetMember.role === 'OWNER')) {
+      return { success: false, error: 'Admins cannot modify roles of other Admins or Owners' };
+    }
+
+    targetMember.role = newRole;
+    const idx = ws.members.findIndex((m) => m.userId === targetUserId);
+    if (idx >= 0) {
+      ws.members[idx].role = newRole;
+    }
+
+    this.logAudit(workspaceId, actorId, actorName, 'MEMBER_ADDED', 'settings', targetUserId, `Updated role for ${targetMember.name} to ${newRole}`);
+
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('members').doc(targetUserId).update({ role: newRole }).catch(console.warn);
+      fs.collection('workspaces').doc(workspaceId).update({ members: ws.members }).catch(console.warn);
+    }
+
+    return { success: true, member: targetMember };
+  }
+
+  public removeWorkspaceMember(
+    workspaceId: string,
+    userId: string,
+    actorId: string,
+    actorName: string,
+    actorRole?: UserRole
+  ): { success: boolean; error?: string } {
+    const ws = this.workspaces.get(workspaceId);
+    if (!ws) return { success: false, error: 'Workspace not found' };
+
+    // Prevent removing workspace owner
+    if (ws.ownerId === userId) {
+      return { success: false, error: 'Cannot remove the workspace owner' };
+    }
+
+    const memMap = this.members.get(workspaceId);
+    if (!memMap || !memMap.has(userId)) return { success: false, error: 'Member not found' };
 
     const member = memMap.get(userId);
+
+    // Admin cannot remove another Admin or Owner
+    if (actorRole === 'ADMIN' && member?.role === 'ADMIN') {
+      return { success: false, error: 'Admins cannot remove other Admins' };
+    }
+
     memMap.delete(userId);
 
-    const ws = this.workspaces.get(workspaceId);
     if (ws) {
       ws.members = ws.members.filter((m) => m.userId !== userId);
     }
@@ -302,6 +380,98 @@ export class PersistentMultiTenantStorage {
       }
     }
 
+    return { success: true };
+  }
+
+  // --- INVITATIONS ---
+  public createInvitation(
+    workspaceId: string,
+    email: string,
+    role: UserRole,
+    actorId: string,
+    actorName: string
+  ): WorkspaceInvitation {
+    let invMap = this.invitations.get(workspaceId);
+    if (!invMap) {
+      invMap = new Map();
+      this.invitations.set(workspaceId, invMap);
+    }
+
+    const id = `inv_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const invitation: WorkspaceInvitation = {
+      id,
+      workspaceId,
+      email: email.toLowerCase().trim(),
+      role,
+      invitedBy: actorId,
+      invitedByName: actorName,
+      createdAt: new Date().toISOString(),
+      status: 'PENDING',
+    };
+
+    invMap.set(id, invitation);
+    this.logAudit(workspaceId, actorId, actorName, 'MEMBER_ADDED', 'settings', id, `Invited ${email} with role ${role}`);
+
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('invitations').doc(id).set(invitation).catch(console.warn);
+    }
+
+    return invitation;
+  }
+
+  public getInvitations(workspaceId: string): WorkspaceInvitation[] {
+    const invMap = this.invitations.get(workspaceId);
+    if (!invMap) return [];
+    return Array.from(invMap.values());
+  }
+
+  public acceptInvitation(
+    workspaceId: string,
+    invitationId: string,
+    user: { uid: string; email?: string; name?: string }
+  ): { success: boolean; error?: string; member?: WorkspaceMember } {
+    const invMap = this.invitations.get(workspaceId);
+    const inv = invMap?.get(invitationId);
+    if (!inv || inv.status !== 'PENDING') {
+      return { success: false, error: 'Invitation is invalid or has already been accepted.' };
+    }
+
+    if (user.email && inv.email.toLowerCase() !== user.email.toLowerCase()) {
+      return { success: false, error: 'This invitation was issued for a different email address.' };
+    }
+
+    inv.status = 'ACCEPTED';
+    const member: WorkspaceMember = {
+      userId: user.uid,
+      name: user.name || user.email?.split('@')[0] || 'Team Member',
+      email: user.email || inv.email,
+      role: inv.role,
+      joinedAt: new Date().toISOString(),
+    };
+
+    this.addWorkspaceMember(workspaceId, member, user.uid, member.name);
+
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('invitations').doc(invitationId).update({ status: 'ACCEPTED' }).catch(console.warn);
+    }
+
+    return { success: true, member };
+  }
+
+  public revokeInvitation(workspaceId: string, invitationId: string, actorId: string, actorName: string): boolean {
+    const invMap = this.invitations.get(workspaceId);
+    const inv = invMap?.get(invitationId);
+    if (!inv) return false;
+
+    inv.status = 'REVOKED';
+    this.logAudit(workspaceId, actorId, actorName, 'MEMBER_REMOVED', 'settings', invitationId, `Revoked invitation for ${inv.email}`);
+
+    const fs = getAdminFirestore();
+    if (fs) {
+      fs.collection('workspaces').doc(workspaceId).collection('invitations').doc(invitationId).update({ status: 'REVOKED' }).catch(console.warn);
+    }
     return true;
   }
 
@@ -455,7 +625,8 @@ export class PersistentMultiTenantStorage {
     leadId: string,
     updates: Partial<Lead>,
     actorId = 'system',
-    actorName = 'Agent'
+    actorName = 'Agent',
+    allowScoreOverride = false
   ): Lead | undefined {
     const lead = this.getLead(workspaceId, leadId);
     if (!lead) return undefined;
@@ -466,8 +637,8 @@ export class PersistentMultiTenantStorage {
       ...(updates.email !== undefined ? { email: updates.email } : {}),
       ...(updates.phone !== undefined ? { phone: updates.phone } : {}),
       ...(updates.status !== undefined ? { status: updates.status } : {}),
-      ...(updates.temperature !== undefined ? { temperature: updates.temperature } : {}),
-      ...(updates.score !== undefined ? { score: updates.score } : {}),
+      ...(allowScoreOverride && updates.temperature !== undefined ? { temperature: updates.temperature } : {}),
+      ...(allowScoreOverride && updates.score !== undefined ? { score: updates.score } : {}),
       ...(updates.service !== undefined ? { service: updates.service } : {}),
       ...(updates.location !== undefined ? { location: updates.location } : {}),
       ...(updates.budget !== undefined ? { budget: updates.budget } : {}),
@@ -478,7 +649,7 @@ export class PersistentMultiTenantStorage {
       ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
       ...(updates.requirements !== undefined ? { requirements: updates.requirements } : {}),
       ...(updates.notes !== undefined ? { notes: updates.notes } : {}),
-      ...(updates.aiAnalysis !== undefined ? { aiAnalysis: updates.aiAnalysis } : {}),
+      ...(allowScoreOverride && updates.aiAnalysis !== undefined ? { aiAnalysis: updates.aiAnalysis } : {}),
       ...(updates.appointmentId !== undefined ? { appointmentId: updates.appointmentId } : {}),
       ...(updates.lastContactedAt !== undefined ? { lastContactedAt: updates.lastContactedAt } : {}),
       updatedAt: new Date().toISOString(),
@@ -492,6 +663,66 @@ export class PersistentMultiTenantStorage {
     if (fs) {
       fs.collection('workspaces').doc(workspaceId).collection('leads').doc(leadId).set(updated, { merge: true }).catch(console.warn);
     }
+    return updated;
+  }
+
+  public async recalculateLeadScore(
+    workspaceId: string,
+    leadId: string,
+    actorId = 'system',
+    actorName = 'Scoring Engine'
+  ): Promise<Lead | undefined> {
+    const lead = this.getLead(workspaceId, leadId);
+    if (!lead) return undefined;
+
+    const ws = this.workspaces.get(workspaceId);
+    const convo = this.getConversationByLeadId(workspaceId, leadId);
+    const transcript = convo?.messages.map((m) => `${m.sender}: ${m.content}`).join('\n') || '';
+
+    let newScore = lead.score;
+    let newTemp = lead.temperature;
+    let newAnalysis = lead.aiAnalysis;
+
+    if (ws?.aiConfig) {
+      try {
+        const { qualifyLeadWithAI } = await import('./gemini');
+        const aiResult = await qualifyLeadWithAI(transcript, ws.aiConfig, lead);
+        newScore = aiResult.score;
+        newTemp = aiResult.temperature;
+        newAnalysis = aiResult;
+      } catch {
+        const { calculateDeterministicLeadScore } = await import('./scoring');
+        const det = calculateDeterministicLeadScore(
+          {
+            hasClearIntent: lead.status !== 'NEW' && lead.status !== 'UNQUALIFIED',
+            hasSufficientBudget: !!lead.budget,
+            urgencyLevel: lead.urgency || 'medium',
+            serviceMatched: !!lead.service,
+            locationMatched: !!lead.location,
+            messagesCount: convo?.messages.length || 0,
+            isDisqualified: lead.status === 'UNQUALIFIED',
+          },
+          ws.aiConfig.leadScoringWeights
+        );
+        newScore = det.score;
+        newTemp = det.temperature;
+      }
+    }
+
+    const updated = this.updateLead(
+      workspaceId,
+      leadId,
+      {
+        score: newScore,
+        temperature: newTemp,
+        aiAnalysis: newAnalysis,
+      },
+      actorId,
+      actorName,
+      true
+    );
+
+    this.logAudit(workspaceId, actorId, actorName, 'AI_QUALIFICATION', 'lead', leadId, `Recalculated lead score to ${newScore} (${newTemp})`);
     return updated;
   }
 

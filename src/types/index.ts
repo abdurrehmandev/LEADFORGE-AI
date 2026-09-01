@@ -42,6 +42,17 @@ export interface WorkspaceMember {
   joinedAt: string;
 }
 
+export interface WorkspaceInvitation {
+  id: string;
+  workspaceId: string;
+  email: string;
+  role: UserRole;
+  invitedBy: string;
+  invitedByName: string;
+  createdAt: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REVOKED';
+}
+
 export interface BusinessAIConfig {
   businessName: string;
   industry: IndustryType;

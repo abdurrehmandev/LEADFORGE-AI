@@ -18,8 +18,16 @@ export interface AuthenticatedRequest extends Request {
 }
 
 /**
+ * Returns whether Demo Mode is explicitly enabled via server environment variable.
+ */
+export function isDemoModeEnabled(): boolean {
+  return process.env.DEMO_MODE === 'true';
+}
+
+/**
  * Express middleware to authenticate callers using Firebase ID tokens.
- * Rejects missing or invalid tokens with HTTP 401.
+ * Rejects missing, invalid, or expired tokens with HTTP 401.
+ * Demo token authentication is strictly disabled in production.
  */
 export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   try {
@@ -40,15 +48,22 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
       });
     }
 
-    // Support demo session token for the pre-seeded public demonstration workspace
+    // Isolated demo tokens are only permitted when DEMO_MODE is explicitly enabled via environment variable
     if (token === 'demo_token' || token === 'demo_guest_token') {
-      req.user = {
-        uid: 'demo_guest_uid',
-        name: 'Demo Evaluator',
-        email: 'evaluator@leadforge.demo',
-        isDemo: true,
-      };
-      return next();
+      if (isDemoModeEnabled()) {
+        req.user = {
+          uid: 'demo_guest_uid',
+          name: 'Demo Evaluator',
+          email: 'evaluator@leadforge.demo',
+          isDemo: true,
+        };
+        return next();
+      } else {
+        return res.status(401).json({
+          error: 'Unauthorized',
+          message: 'Demo authentication is disabled in production. Valid Firebase credentials required.',
+        });
+      }
     }
 
     // Verify token using Firebase Admin SDK
@@ -89,7 +104,7 @@ export function requireWorkspaceAccess(allowedRoles?: UserRole[]) {
         (req.body && req.body.workspaceId) ||
         (req.query && (req.query.workspaceId as string));
 
-      if (!workspaceId) {
+      if (!workspaceId || typeof workspaceId !== 'string') {
         return res.status(400).json({ error: 'Workspace ID is required for this operation.' });
       }
 
@@ -102,8 +117,8 @@ export function requireWorkspaceAccess(allowedRoles?: UserRole[]) {
         return res.status(404).json({ error: 'Workspace not found.' });
       }
 
-      // Check if this is the public demo workspace
-      if (workspace.isDemo || workspace.id === 'ws_northstar_solar_demo') {
+      // Check if this is a demo workspace and DEMO_MODE is active
+      if (isDemoModeEnabled() && (workspace.isDemo || workspace.id === 'ws_northstar_solar_demo')) {
         const demoRole: UserRole = (req.headers['x-demo-role'] as UserRole) || 'OWNER';
         req.workspace = workspace;
         req.membership = {
@@ -123,7 +138,7 @@ export function requireWorkspaceAccess(allowedRoles?: UserRole[]) {
         return next();
       }
 
-      // Look up membership in persistent storage
+      // Look up membership in persistent multi-tenant storage
       const member = db.getWorkspaceMember(workspaceId, req.user.uid);
       const isOwner = workspace.ownerId === req.user.uid;
 
@@ -134,7 +149,7 @@ export function requireWorkspaceAccess(allowedRoles?: UserRole[]) {
         });
       }
 
-      const role: UserRole = member?.role || (isOwner ? 'OWNER' : 'VIEWER');
+      const role: UserRole = isOwner ? 'OWNER' : (member?.role || 'VIEWER');
 
       // Check role authorization
       if (allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(role)) {
@@ -167,3 +182,4 @@ export function requireWorkspaceAccess(allowedRoles?: UserRole[]) {
 export function requireWorkspaceRole(roles: UserRole[]) {
   return requireWorkspaceAccess(roles);
 }
+

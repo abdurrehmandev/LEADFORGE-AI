@@ -236,9 +236,32 @@ export const saveWorkflowSchema = z.object({
 export const addMemberSchema = z.object({
   email: z.string().email(),
   name: z.string().min(1),
-  role: z.enum(['OWNER', 'ADMIN', 'AGENT', 'VIEWER']),
+  role: z.enum(['ADMIN', 'AGENT', 'VIEWER']), // OWNER cannot be granted via standard member invite
 });
 
-export const updateMemberSchema = z.object({
-  role: z.enum(['OWNER', 'ADMIN', 'AGENT', 'VIEWER']),
+export const createInvitationSchema = z.object({
+  email: z.string().email('Valid email address required'),
+  role: z.enum(['ADMIN', 'AGENT', 'VIEWER']),
 });
+
+export const updateMemberRoleSchema = z.object({
+  role: z.enum(['ADMIN', 'AGENT', 'VIEWER']), // OWNER cannot be granted via member update
+});
+
+export const webhookLeadSchema = z.object({
+  workspaceId: z.string().min(1, 'workspaceId is required'),
+  name: z.string().min(1, 'Lead name is required').max(100),
+  email: z.string().email().optional().or(z.literal('')),
+  phone: z.string().max(40).optional().or(z.literal('')),
+  source: z.string().max(50).optional().default('Webhook'),
+  service: z.string().max(100).optional(),
+  location: z.string().max(100).optional(),
+  budget: z.string().max(100).optional(),
+  urgency: z.enum(['immediate', 'this_week', 'this_month', 'researching', 'unknown']).optional(),
+  preferredContactMethod: z.enum(['whatsapp', 'sms', 'email', 'phone']).optional(),
+  tags: z.array(z.string()).optional().default([]),
+  requirements: z.record(z.string(), z.any()).optional().default({}),
+  notes: z.string().max(2000).optional(),
+  idempotencyKey: z.string().max(100).optional(),
+});
+

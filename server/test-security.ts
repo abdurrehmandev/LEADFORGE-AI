@@ -193,6 +193,89 @@ async function runSecurityTests() {
   assert(typeof aiResult.score === 'number', 'AI Engine returns valid numeric deterministic score');
   assert(aiResult.qualification !== undefined, 'AI Engine safely parses intent without executing hostile directives');
 
+  // --- 6. ADVANCED ROLE HIERARCHY & INVITATION TESTS ---
+  console.log('\n--- 6. Role Hierarchy & Invitation Lifecycle ---');
+
+  // Add Admin member to Workspace Alpha
+  const adminUid = 'usr_admin_111';
+  db.addWorkspaceMember(
+    wsAlpha.id,
+    {
+      userId: adminUid,
+      name: 'Adam Admin',
+      email: 'adam@alphasolar.com',
+      role: 'ADMIN',
+      joinedAt: new Date().toISOString(),
+    },
+    userA_uid,
+    'Alice'
+  );
+
+  // Admin attempts to demote or remove the Owner (Must be rejected)
+  const demoteOwnerAttempt = db.updateWorkspaceMemberRole(wsAlpha.id, userA_uid, 'VIEWER', adminUid, 'Adam', 'ADMIN');
+  assert(!demoteOwnerAttempt.success, 'Admin cannot modify Owner role');
+
+  const removeOwnerAttempt = db.removeWorkspaceMember(wsAlpha.id, userA_uid, adminUid, 'Adam', 'ADMIN');
+  assert(!removeOwnerAttempt.success, 'Admin cannot remove Workspace Owner');
+
+  // Owner can promote or update members
+  const updateViewerAttempt = db.updateWorkspaceMemberRole(wsAlpha.id, userViewerUid, 'AGENT', userA_uid, 'Alice', 'OWNER');
+  assert(updateViewerAttempt.success && updateViewerAttempt.member?.role === 'AGENT', 'Owner can update member role to AGENT');
+
+  // Invitation creation & acceptance
+  const inv = db.createInvitation(wsAlpha.id, 'newhire@alphasolar.com', 'AGENT', userA_uid, 'Alice');
+  assert(inv.email === 'newhire@alphasolar.com' && inv.status === 'PENDING', 'Workspace invitation created in PENDING status');
+
+  const acceptResult = db.acceptInvitation(wsAlpha.id, inv.id, {
+    uid: 'usr_newhire_222',
+    email: 'newhire@alphasolar.com',
+    name: 'New Hire',
+  });
+  assert(acceptResult.success && acceptResult.member?.role === 'AGENT', 'Invitation accepted and member added as AGENT');
+
+  // Second accept on same invitation must fail (replay attack guard)
+  const replayAccept = db.acceptInvitation(wsAlpha.id, inv.id, {
+    uid: 'usr_imposter_333',
+    email: 'newhire@alphasolar.com',
+    name: 'Imposter',
+  });
+  assert(!replayAccept.success, 'Expired/accepted invitation replay attack prevented');
+
+  // --- 7. LEAD SCORE PROTECTION TESTS ---
+  console.log('\n--- 7. Lead Score Tampering & Recalculation ---');
+
+  const leadAlpha = db.createLead(
+    {
+      id: 'lead_alpha_secure_01',
+      workspaceId: wsAlpha.id,
+      name: 'High Value Lead',
+      email: 'lead@solarcity.com',
+      phone: '+15551234',
+      source: 'Website Widget',
+      status: 'NEW',
+      temperature: 'COLD',
+      score: 30,
+      service: 'Residential Solar',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      tags: [],
+    },
+    userA_uid,
+    'Alice'
+  );
+
+  // Client attempts to tamper with score directly without authority
+  const tamperedLeadUpdate = db.updateLead(
+    wsAlpha.id,
+    leadAlpha.id,
+    { name: 'Updated Name', score: 100, temperature: 'HOT' } as any,
+    userA_uid,
+    'Alice',
+    false // allowScoreOverride = false
+  );
+  assert(tamperedLeadUpdate?.score === 30, 'Lead Score Protection: Client cannot manually inflate lead score');
+  assert(tamperedLeadUpdate?.name === 'Updated Name', 'Lead non-score fields updated safely');
+
   // --- SUMMARY ---
   console.log('\n======================================================');
   console.log(`  TEST RESULTS: ${passedTests}/${totalTests} PASSED`);

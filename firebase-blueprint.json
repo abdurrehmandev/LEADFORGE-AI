@@ -1,0 +1,91 @@
+{
+  "entities": {
+    "Workspace": {
+      "title": "Workspace",
+      "description": "Multi-tenant business workspace container",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "name": { "type": "string", "maxLength": 100, "minLength": 1 },
+        "slug": { "type": "string", "maxLength": 100 },
+        "ownerId": { "type": "string" },
+        "plan": { "type": "string", "enum": ["free", "pro", "enterprise"] },
+        "isDemo": { "type": "boolean" },
+        "automationsPaused": { "type": "boolean" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "ownerId", "plan", "createdAt"]
+    },
+    "WorkspaceMember": {
+      "title": "WorkspaceMember",
+      "description": "Workspace team member access and role binding",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "name": { "type": "string", "maxLength": 100 },
+        "email": { "type": "string", "format": "email" },
+        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "AGENT", "VIEWER"] },
+        "joinedAt": { "type": "string" }
+      },
+      "required": ["userId", "name", "email", "role", "joinedAt"]
+    },
+    "Lead": {
+      "title": "Lead",
+      "description": "Inbound business lead with AI qualification data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "workspaceId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "name": { "type": "string", "maxLength": 100, "minLength": 1 },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "source": { "type": "string" },
+        "status": { "type": "string", "enum": ["NEW", "CONTACTED", "QUALIFIED", "UNQUALIFIED", "APPOINTMENT_BOOKED", "WON", "LOST"] },
+        "temperature": { "type": "string", "enum": ["HOT", "WARM", "COLD"] },
+        "score": { "type": "number" },
+        "service": { "type": "string" },
+        "location": { "type": "string" },
+        "budget": { "type": "string" },
+        "urgency": { "type": "string" },
+        "preferredContactMethod": { "type": "string", "enum": ["whatsapp", "sms", "email", "phone"] },
+        "assignedAgentId": { "type": "string" },
+        "assignedAgentName": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "workspaceId", "name", "status", "temperature", "score", "createdAt", "updatedAt"]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user identity profile",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "pattern": "^[a-zA-Z0-9_-]+$" },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string", "maxLength": 100 },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["uid", "email"]
+    }
+  },
+  "firestore": {
+    "/workspaces/{workspaceId}": {
+      "schema": { "$ref": "#/entities/Workspace" },
+      "description": "Root workspace document"
+    },
+    "/workspaces/{workspaceId}/members/{memberId}": {
+      "schema": { "$ref": "#/entities/WorkspaceMember" },
+      "description": "Workspace member roles and permissions"
+    },
+    "/workspaces/{workspaceId}/leads/{leadId}": {
+      "schema": { "$ref": "#/entities/Lead" },
+      "description": "Leads managed within the workspace"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Individual user account record"
+    }
+  }
+}

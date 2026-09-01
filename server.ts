@@ -29,7 +29,9 @@ import {
   updateAppointmentSchema,
   saveWorkflowSchema,
   addMemberSchema,
-  updateMemberSchema,
+  updateMemberRoleSchema,
+  createInvitationSchema,
+  webhookLeadSchema,
 } from './server/middleware/validate';
 
 async function startServer() {
@@ -155,21 +157,102 @@ async function startServer() {
     }
   );
 
+  app.put(
+    '/api/workspaces/:id/members/:userId',
+    requireAuth,
+    requireWorkspaceRole(['OWNER', 'ADMIN']),
+    validateBody(updateMemberRoleSchema),
+    (req: AuthenticatedRequest, res: Response) => {
+      const { role } = req.body;
+      const result = db.updateWorkspaceMemberRole(
+        req.params.id,
+        req.params.userId,
+        role,
+        req.user!.uid,
+        req.user!.name || 'Admin',
+        req.membership?.role || 'VIEWER'
+      );
+      if (!result.success) {
+        return res.status(400).json({ error: result.error || 'Failed to update member role' });
+      }
+      res.json({ success: true, member: result.member });
+    }
+  );
+
   app.delete(
     '/api/workspaces/:id/members/:userId',
     requireAuth,
-    requireWorkspaceRole(['OWNER']),
+    requireWorkspaceRole(['OWNER', 'ADMIN']),
     (req: AuthenticatedRequest, res: Response) => {
-      if (req.params.userId === req.workspace?.ownerId) {
-        return res.status(400).json({ error: 'Cannot remove workspace owner.' });
-      }
-      const success = db.removeWorkspaceMember(
+      const result = db.removeWorkspaceMember(
         req.params.id,
         req.params.userId,
         req.user!.uid,
-        req.user!.name || req.user!.email || 'Owner'
+        req.user!.name || req.user!.email || 'Admin',
+        req.membership?.role
       );
-      if (!success) return res.status(404).json({ error: 'Member not found' });
+      if (!result.success) return res.status(400).json({ error: result.error || 'Member not found or cannot be removed' });
+      res.json({ success: true });
+    }
+  );
+
+  // --- WORKSPACE INVITATIONS ---
+  app.get(
+    '/api/workspaces/:id/invitations',
+    requireAuth,
+    requireWorkspaceRole(['OWNER', 'ADMIN']),
+    (req: AuthenticatedRequest, res: Response) => {
+      const invitations = db.getInvitations(req.params.id);
+      res.json({ invitations });
+    }
+  );
+
+  app.post(
+    '/api/workspaces/:id/invitations',
+    requireAuth,
+    requireWorkspaceRole(['OWNER', 'ADMIN']),
+    validateBody(createInvitationSchema),
+    (req: AuthenticatedRequest, res: Response) => {
+      const { email, role } = req.body;
+      const invitation = db.createInvitation(
+        req.params.id,
+        email,
+        role,
+        req.user!.uid,
+        req.user!.name || 'Admin'
+      );
+      res.status(201).json({ invitation });
+    }
+  );
+
+  app.post(
+    '/api/workspaces/:id/invitations/:invId/accept',
+    requireAuth,
+    (req: AuthenticatedRequest, res: Response) => {
+      const result = db.acceptInvitation(req.params.id, req.params.invId, {
+        uid: req.user!.uid,
+        email: req.user!.email,
+        name: req.user!.name,
+      });
+      if (!result.success) {
+        return res.status(400).json({ error: result.error || 'Failed to accept invitation' });
+      }
+      res.json({ success: true, member: result.member });
+    }
+  );
+
+  app.delete(
+    '/api/workspaces/:id/invitations/:invId',
+    requireAuth,
+    requireWorkspaceRole(['OWNER', 'ADMIN']),
+    (req: AuthenticatedRequest, res: Response) => {
+      const success = db.revokeInvitation(
+        req.params.id,
+        req.params.invId,
+        req.user!.uid,
+        req.user!.name || 'Admin'
+      );
+      if (!success) return res.status(404).json({ error: 'Invitation not found' });
       res.json({ success: true });
     }
   );
@@ -304,34 +387,85 @@ async function startServer() {
       const currentLead = db.getLead(workspaceId, leadId);
       if (!currentLead) return res.status(404).json({ error: 'Lead not found' });
 
-      // If user is AGENT, verify resource assignment if restricted
-      if (
-        req.membership?.role === 'AGENT' &&
-        currentLead.assignedAgentId &&
-        currentLead.assignedAgentId !== req.user!.uid &&
-        !req.workspace?.isDemo
-      ) {
-        // Warning: agents can view but only modify assigned leads
+      // If user is AGENT, enforce assigned lead boundaries
+      if (req.membership?.role === 'AGENT' && !req.workspace?.isDemo) {
+        if (currentLead.assignedAgentId && currentLead.assignedAgentId !== req.user!.uid) {
+          return res.status(403).json({
+            error: 'Forbidden',
+            message: 'Agents may only update leads assigned to them.',
+          });
+        }
+        if (req.body.assignedAgentId && req.body.assignedAgentId !== currentLead.assignedAgentId) {
+          return res.status(403).json({
+            error: 'Forbidden',
+            message: 'Agents cannot reassign leads.',
+          });
+        }
       }
+
+      // Strip score-related fields from generic client updates (Score Protection)
+      const sanitizedUpdates = { ...req.body };
+      delete sanitizedUpdates.score;
+      delete sanitizedUpdates.temperature;
+      delete sanitizedUpdates.aiAnalysis;
 
       const updated = db.updateLead(
         workspaceId,
         leadId,
-        req.body,
+        sanitizedUpdates,
         req.user!.uid,
-        req.user!.name || req.user!.email || 'Agent'
+        req.user!.name || req.user!.email || 'Agent',
+        false
       );
       if (!updated) return res.status(404).json({ error: 'Lead not found' });
 
       if (req.body.status === 'APPOINTMENT_BOOKED' && currentLead.status !== 'APPOINTMENT_BOOKED') {
         await processEventTrigger(workspaceId, 'APPOINTMENT_BOOKED', updated);
-      } else if (req.body.score && req.body.score !== currentLead.score) {
-        await processEventTrigger(workspaceId, 'SCORE_CHANGED', updated);
       } else {
         await processEventTrigger(workspaceId, 'LEAD_UPDATED', updated);
       }
 
       res.json({ lead: updated });
+    }
+  );
+
+  // Recalculate lead score using AI/deterministic rules (Lead Score Protection Endpoint)
+  app.post(
+    '/api/workspaces/:id/leads/:leadId/recalculate-score',
+    requireAuth,
+    requireWorkspaceRole(['OWNER', 'ADMIN', 'AGENT']),
+    async (req: AuthenticatedRequest, res: Response) => {
+      try {
+        const { id: workspaceId, leadId } = req.params;
+        const currentLead = db.getLead(workspaceId, leadId);
+        if (!currentLead) return res.status(404).json({ error: 'Lead not found' });
+
+        if (req.membership?.role === 'AGENT' && !req.workspace?.isDemo) {
+          if (currentLead.assignedAgentId && currentLead.assignedAgentId !== req.user!.uid) {
+            return res.status(403).json({
+              error: 'Forbidden',
+              message: 'Agents may only recalculate scores for leads assigned to them.',
+            });
+          }
+        }
+
+        const updated = await db.recalculateLeadScore(
+          workspaceId,
+          leadId,
+          req.user!.uid,
+          req.user!.name || 'Lead Engine'
+        );
+        if (!updated) return res.status(404).json({ error: 'Lead not found' });
+
+        if (updated.score >= 70 && currentLead.score < 70) {
+          await processEventTrigger(workspaceId, 'SCORE_CHANGED', updated);
+        }
+
+        res.json({ lead: updated });
+      } catch (err: any) {
+        console.error('Recalculate score error:', err);
+        res.status(500).json({ error: 'Failed to recalculate score' });
+      }
     }
   );
 
@@ -870,12 +1004,12 @@ async function startServer() {
   );
 
   // --- 9. INBOUND WEBHOOK WITH IDEMPOTENCY & SIGNATURE VERIFICATION ---
-  app.post('/api/webhooks/leads', async (req: Request, res: Response) => {
+  app.post('/api/webhooks/leads', validateBody(webhookLeadSchema), async (req: Request, res: Response) => {
     try {
       const idempotencyKey =
         (req.headers['x-idempotency-key'] as string) ||
-        (req.body.idempotency_key as string) ||
-        `wh_${req.body.email || req.body.phone || Date.now()}`;
+        (req.body.idempotencyKey as string) ||
+        `wh_${req.body.workspaceId}_${req.body.email || req.body.phone || Date.now()}`;
 
       if (db.isWebhookProcessed(idempotencyKey)) {
         return res.status(200).json({
@@ -890,25 +1024,23 @@ async function startServer() {
         return res.status(401).json({ error: 'Invalid webhook signature or secret.' });
       }
 
-      const workspaceId =
-        req.body.workspace_id || req.query.workspace_id || 'ws_northstar_solar_demo';
-      const ws = db.getWorkspace(workspaceId as string);
+      const workspaceId = req.body.workspaceId;
+      const ws = db.getWorkspace(workspaceId);
       if (!ws) return res.status(404).json({ error: 'Workspace not found' });
 
       const rawLead = req.body;
       const convoText =
-        rawLead.message ||
         rawLead.notes ||
-        rawLead.requirements ||
+        (rawLead.requirements && JSON.stringify(rawLead.requirements)) ||
         `Inbound webhook lead submission for ${rawLead.service || 'consultation'}`;
       const aiAnalysis = await qualifyLeadWithAI(convoText, ws.aiConfig, rawLead);
 
       const lead: Lead = {
         id: `lead_wh_${Date.now()}`,
         workspaceId: ws.id,
-        name: rawLead.name || rawLead.full_name || 'Webhook Inbound Lead',
+        name: rawLead.name,
         email: rawLead.email,
-        phone: rawLead.phone || rawLead.mobile,
+        phone: rawLead.phone,
         source: 'Webhook',
         status: aiAnalysis.score >= 70 ? 'QUALIFIED' : 'NEW',
         temperature: aiAnalysis.temperature,
@@ -918,7 +1050,7 @@ async function startServer() {
         budget: rawLead.budget || aiAnalysis.budget,
         requirements: { ...(rawLead.requirements || {}), ...aiAnalysis.requirements },
         urgency: aiAnalysis.urgency,
-        preferredContactMethod: 'whatsapp',
+        preferredContactMethod: rawLead.preferredContactMethod || 'whatsapp',
         assignedAgentId: ws.members[0]?.userId || 'usr_agent',
         assignedAgentName: ws.members[0]?.name || 'Assigned Agent',
         createdAt: new Date().toISOString(),
