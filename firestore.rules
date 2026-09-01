@@ -10,6 +10,9 @@ service cloud.firestore {
     match /workspaces/{workspaceId} {
       allow read, write: if true; // Allows web clients and server backend to read/write workspace records
       
+      match /members/{memberId} {
+        allow read, write: if true;
+      }
       match /leads/{leadId} {
         allow read, write: if true;
       }

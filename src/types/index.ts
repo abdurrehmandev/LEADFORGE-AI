@@ -165,6 +165,7 @@ export interface Lead {
   nextFollowUpAt?: string;
   appointmentId?: string;
   tags: string[];
+  notes?: string;
   customFields?: Record<string, string>;
   aiAnalysis?: AIAnalysis;
   unreadCount?: number;
@@ -310,11 +311,15 @@ export interface AuditLog {
     | 'WORKFLOW_TRIGGERED'
     | 'WORKFLOW_COMPLETED'
     | 'WORKFLOW_FAILED'
+    | 'WORKFLOW_SAVED'
     | 'APPOINTMENT_CREATED'
+    | 'APPOINTMENT_UPDATED'
     | 'APPOINTMENT_CANCELLED'
     | 'AUTOMATION_TOGGLED'
     | 'INTEGRATION_CONFIGURED'
     | 'SETTINGS_CHANGED'
+    | 'MEMBER_ADDED'
+    | 'MEMBER_REMOVED'
     | 'REACTIVATION_SENT';
   entityType: 'lead' | 'workflow' | 'appointment' | 'integration' | 'settings' | 'session';
   entityId?: string;

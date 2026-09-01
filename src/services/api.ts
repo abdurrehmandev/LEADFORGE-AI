@@ -1,5 +1,6 @@
 import {
   Workspace,
+  WorkspaceMember,
   Lead,
   Conversation,
   Appointment,
@@ -9,144 +10,202 @@ import {
   AuditLog,
   IntegrationConfig,
   AIAnalysis,
+  UserRole,
 } from '../types';
+import { auth } from './firebase';
+
+/**
+ * Centralized API client with automatic Firebase ID token attachment,
+ * token refresh handling, and standardized error processing.
+ */
+async function apiFetch<T = any>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const headers = new Headers(options.headers || {});
+
+  if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  // Obtain fresh Firebase ID Token if user is logged in
+  try {
+    const currentUser = auth.currentUser;
+    if (currentUser) {
+      const token = await currentUser.getIdToken();
+      headers.set('Authorization', `Bearer ${token}`);
+    } else {
+      // Demo guest token for public evaluation
+      headers.set('Authorization', 'Bearer demo_token');
+    }
+  } catch (err) {
+    headers.set('Authorization', 'Bearer demo_token');
+  }
+
+  const response = await fetch(endpoint, {
+    ...options,
+    headers,
+  });
+
+  if (!response.ok) {
+    let errorData: any = {};
+    try {
+      errorData = await response.json();
+    } catch {
+      // Non-JSON response
+    }
+
+    if (response.status === 401) {
+      throw new Error(errorData.message || 'Authentication required or session expired. Please sign in.');
+    }
+    if (response.status === 403) {
+      throw new Error(errorData.message || 'Forbidden: Insufficient permissions for this workspace.');
+    }
+    if (response.status === 404) {
+      throw new Error(errorData.error || 'Requested resource was not found.');
+    }
+    if (response.status === 503) {
+      throw new Error('Service is temporarily unavailable.');
+    }
+
+    throw new Error(errorData.message || errorData.error || `Request failed with status ${response.status}`);
+  }
+
+  return response.json();
+}
 
 export const api = {
   // --- WORKSPACES ---
   async getWorkspaces(): Promise<Workspace[]> {
-    const res = await fetch('/api/workspaces');
-    if (!res.ok) throw new Error('Failed to fetch workspaces');
-    const data = await res.json();
+    const data = await apiFetch<{ workspaces: Workspace[] }>('/api/workspaces');
     return data.workspaces;
   },
 
   async getWorkspace(id: string): Promise<Workspace> {
-    const res = await fetch(`/api/workspaces/${id}`);
-    if (!res.ok) throw new Error('Failed to fetch workspace');
-    const data = await res.json();
+    const data = await apiFetch<{ workspace: Workspace }>(`/api/workspaces/${id}`);
     return data.workspace;
   },
 
   async createWorkspace(payload: Partial<Workspace>): Promise<Workspace> {
-    const res = await fetch('/api/workspaces', {
+    const data = await apiFetch<{ workspace: Workspace }>('/api/workspaces', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error('Failed to create workspace');
-    const data = await res.json();
     return data.workspace;
   },
 
   async updateWorkspace(id: string, updates: Partial<Workspace>): Promise<Workspace> {
-    const res = await fetch(`/api/workspaces/${id}`, {
+    const data = await apiFetch<{ workspace: Workspace }>(`/api/workspaces/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
+      body: JSON.stringify(updates),
     });
-    if (!res.ok) throw new Error('Failed to update workspace');
-    const data = await res.json();
     return data.workspace;
   },
 
+  async getWorkspaceMembers(id: string): Promise<WorkspaceMember[]> {
+    const data = await apiFetch<{ members: WorkspaceMember[] }>(`/api/workspaces/${id}/members`);
+    return data.members;
+  },
+
+  async addWorkspaceMember(id: string, payload: { email: string; name: string; role: UserRole }): Promise<WorkspaceMember> {
+    const data = await apiFetch<{ member: WorkspaceMember }>(`/api/workspaces/${id}/members`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return data.member;
+  },
+
+  async removeWorkspaceMember(id: string, userId: string): Promise<void> {
+    await apiFetch(`/api/workspaces/${id}/members/${userId}`, {
+      method: 'DELETE',
+    });
+  },
+
   async reseedWorkspace(id: string): Promise<void> {
-    const res = await fetch(`/api/workspaces/${id}/reseed`, { method: 'POST' });
-    if (!res.ok) throw new Error('Failed to reseed demo data');
+    await apiFetch(`/api/workspaces/${id}/reseed`, { method: 'POST' });
   },
 
   async setPauseAutomations(id: string, paused: boolean): Promise<Workspace> {
-    const res = await fetch(`/api/workspaces/${id}/pause-automations`, {
+    const data = await apiFetch<{ workspace: Workspace }>(`/api/workspaces/${id}/pause-automations`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ paused })
+      body: JSON.stringify({ paused }),
     });
-    if (!res.ok) throw new Error('Failed to update automation state');
-    const data = await res.json();
     return data.workspace;
   },
 
   // --- LEADS ---
   async getLeads(workspaceId: string): Promise<Lead[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/leads`);
-    if (!res.ok) throw new Error('Failed to fetch leads');
-    const data = await res.json();
+    const data = await apiFetch<{ leads: Lead[] }>(`/api/workspaces/${workspaceId}/leads`);
     return data.leads;
   },
 
   async createLead(workspaceId: string, lead: Partial<Lead>): Promise<Lead> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/leads`, {
+    const data = await apiFetch<{ lead: Lead }>(`/api/workspaces/${workspaceId}/leads`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(lead)
+      body: JSON.stringify(lead),
     });
-    if (!res.ok) throw new Error('Failed to create lead');
-    const data = await res.json();
     return data.lead;
   },
 
   async updateLead(workspaceId: string, leadId: string, updates: Partial<Lead>): Promise<Lead> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/leads/${leadId}`, {
+    const data = await apiFetch<{ lead: Lead }>(`/api/workspaces/${workspaceId}/leads/${leadId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
+      body: JSON.stringify(updates),
     });
-    if (!res.ok) throw new Error('Failed to update lead');
-    const data = await res.json();
     return data.lead;
   },
 
   async deleteLead(workspaceId: string, leadId: string): Promise<void> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/leads/${leadId}`, {
-      method: 'DELETE'
+    await apiFetch(`/api/workspaces/${workspaceId}/leads/${leadId}`, {
+      method: 'DELETE',
     });
-    if (!res.ok) throw new Error('Failed to delete lead');
   },
 
   async qualifyLead(workspaceId: string, leadId: string): Promise<{ lead: Lead; aiAnalysis: AIAnalysis }> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/leads/${leadId}/qualify`, {
-      method: 'POST'
-    });
-    if (!res.ok) throw new Error('Failed to qualify lead with AI');
-    return res.json();
+    return apiFetch<{ lead: Lead; aiAnalysis: AIAnalysis }>(
+      `/api/workspaces/${workspaceId}/leads/${leadId}/qualify`,
+      {
+        method: 'POST',
+      }
+    );
   },
 
   async bulkTag(workspaceId: string, leadIds: string[], tag: string): Promise<void> {
-    await fetch(`/api/workspaces/${workspaceId}/leads/bulk-tag`, {
+    await apiFetch(`/api/workspaces/${workspaceId}/leads/bulk-tag`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadIds, tag })
+      body: JSON.stringify({ leadIds, tag }),
     });
   },
 
   async bulkAssign(workspaceId: string, leadIds: string[], agentId: string, agentName: string): Promise<void> {
-    await fetch(`/api/workspaces/${workspaceId}/leads/bulk-assign`, {
+    await apiFetch(`/api/workspaces/${workspaceId}/leads/bulk-assign`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadIds, agentId, agentName })
+      body: JSON.stringify({ leadIds, agentId, agentName }),
     });
   },
 
   async bulkStatus(workspaceId: string, leadIds: string[], status: string): Promise<void> {
-    await fetch(`/api/workspaces/${workspaceId}/leads/bulk-status`, {
+    await apiFetch(`/api/workspaces/${workspaceId}/leads/bulk-status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadIds, status })
+      body: JSON.stringify({ leadIds, status }),
     });
   },
 
   // --- CONVERSATIONS ---
   async getConversations(workspaceId: string): Promise<Conversation[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/conversations`);
-    if (!res.ok) throw new Error('Failed to fetch conversations');
-    const data = await res.json();
+    const data = await apiFetch<{ conversations: Conversation[] }>(`/api/workspaces/${workspaceId}/conversations`);
     return data.conversations;
   },
 
   async getConversation(workspaceId: string, leadId: string): Promise<Conversation | undefined> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/conversations/${leadId}`);
-    if (!res.ok) return undefined;
-    const data = await res.json();
-    return data.conversation;
+    try {
+      const data = await apiFetch<{ conversation: Conversation }>(
+        `/api/workspaces/${workspaceId}/conversations/${leadId}`
+      );
+      return data.conversation;
+    } catch {
+      return undefined;
+    }
   },
 
   async sendMessage(
@@ -156,13 +215,13 @@ export const api = {
     sender: 'agent' | 'lead' = 'agent',
     senderName = 'Agent'
   ): Promise<{ conversation: Conversation; lead: Lead }> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/conversations/${leadId}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, sender, senderName })
-    });
-    if (!res.ok) throw new Error('Failed to send message');
-    return res.json();
+    return apiFetch<{ conversation: Conversation; lead: Lead }>(
+      `/api/workspaces/${workspaceId}/conversations/${leadId}/messages`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ content, sender, senderName }),
+      }
+    );
   },
 
   // --- SIMULATOR ---
@@ -177,153 +236,137 @@ export const api = {
     extractedSignals: Record<string, string>;
     liveAnalysis: AIAnalysis;
   }> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/simulator/chat`, {
+    return apiFetch(`/api/workspaces/${workspaceId}/simulator/chat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages, latestMessage, leadContext })
+      body: JSON.stringify({ messages, latestMessage, leadContext }),
     });
-    if (!res.ok) throw new Error('Simulator request failed');
-    return res.json();
   },
 
   // --- APPOINTMENTS ---
   async getAppointments(workspaceId: string): Promise<Appointment[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/appointments`);
-    if (!res.ok) throw new Error('Failed to fetch appointments');
-    const data = await res.json();
+    const data = await apiFetch<{ appointments: Appointment[] }>(`/api/workspaces/${workspaceId}/appointments`);
     return data.appointments;
   },
 
   async createAppointment(workspaceId: string, apt: Partial<Appointment>): Promise<Appointment> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/appointments`, {
+    const data = await apiFetch<{ appointment: Appointment }>(`/api/workspaces/${workspaceId}/appointments`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(apt)
+      body: JSON.stringify(apt),
     });
-    if (!res.ok) throw new Error('Failed to schedule appointment');
-    const data = await res.json();
     return data.appointment;
   },
 
   async updateAppointment(workspaceId: string, aptId: string, updates: Partial<Appointment>): Promise<Appointment> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/appointments/${aptId}`, {
+    const data = await apiFetch<{ appointment: Appointment }>(`/api/workspaces/${workspaceId}/appointments/${aptId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
+      body: JSON.stringify(updates),
     });
-    if (!res.ok) throw new Error('Failed to update appointment');
-    const data = await res.json();
     return data.appointment;
   },
 
   // --- WORKFLOWS ---
   async getWorkflows(workspaceId: string): Promise<Workflow[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/workflows`);
-    if (!res.ok) throw new Error('Failed to fetch workflows');
-    const data = await res.json();
+    const data = await apiFetch<{ workflows: Workflow[] }>(`/api/workspaces/${workspaceId}/workflows`);
     return data.workflows;
   },
 
   async saveWorkflow(workspaceId: string, workflow: Partial<Workflow>): Promise<Workflow> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/workflows`, {
+    const data = await apiFetch<{ workflow: Workflow }>(`/api/workspaces/${workspaceId}/workflows`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(workflow)
+      body: JSON.stringify(workflow),
     });
-    if (!res.ok) throw new Error('Failed to save workflow');
-    const data = await res.json();
     return data.workflow;
   },
 
   async toggleWorkflow(workspaceId: string, wfId: string, isEnabled: boolean): Promise<Workflow> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/workflows/${wfId}/toggle`, {
+    const data = await apiFetch<{ workflow: Workflow }>(`/api/workspaces/${workspaceId}/workflows/${wfId}/toggle`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isEnabled })
+      body: JSON.stringify({ isEnabled }),
     });
-    if (!res.ok) throw new Error('Failed to toggle workflow');
-    const data = await res.json();
     return data.workflow;
   },
 
   async getWorkflowExecutions(workspaceId: string): Promise<WorkflowExecution[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/workflow-executions`);
-    if (!res.ok) throw new Error('Failed to fetch workflow executions');
-    const data = await res.json();
+    const data = await apiFetch<{ executions: WorkflowExecution[] }>(
+      `/api/workspaces/${workspaceId}/workflow-executions`
+    );
     return data.executions;
   },
 
   // --- NOTIFICATIONS & AUDIT & INTEGRATIONS ---
   async getNotifications(workspaceId: string): Promise<Notification[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/notifications`);
-    if (!res.ok) throw new Error('Failed to fetch notifications');
-    const data = await res.json();
+    const data = await apiFetch<{ notifications: Notification[] }>(`/api/workspaces/${workspaceId}/notifications`);
     return data.notifications;
   },
 
   async markNotificationRead(workspaceId: string, notifId: string): Promise<void> {
-    await fetch(`/api/workspaces/${workspaceId}/notifications/${notifId}/read`, { method: 'PUT' });
+    await apiFetch(`/api/workspaces/${workspaceId}/notifications/${notifId}/read`, { method: 'PUT' });
   },
 
   async markAllNotificationsRead(workspaceId: string): Promise<void> {
-    await fetch(`/api/workspaces/${workspaceId}/notifications/read-all`, { method: 'POST' });
+    await apiFetch(`/api/workspaces/${workspaceId}/notifications/read-all`, { method: 'POST' });
   },
 
   async getAuditLogs(workspaceId: string): Promise<AuditLog[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/audit-logs`);
-    if (!res.ok) throw new Error('Failed to fetch audit logs');
-    const data = await res.json();
+    const data = await apiFetch<{ auditLogs: AuditLog[] }>(`/api/workspaces/${workspaceId}/audit-logs`);
     return data.auditLogs;
   },
 
   async getIntegrations(workspaceId: string): Promise<IntegrationConfig[]> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/integrations`);
-    if (!res.ok) throw new Error('Failed to fetch integrations');
-    const data = await res.json();
+    const data = await apiFetch<{ integrations: IntegrationConfig[] }>(`/api/workspaces/${workspaceId}/integrations`);
     return data.integrations;
   },
 
-  async updateIntegration(workspaceId: string, intId: string, updates: Partial<IntegrationConfig>): Promise<IntegrationConfig> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/integrations/${intId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
-    });
-    if (!res.ok) throw new Error('Failed to update integration');
-    const data = await res.json();
+  async updateIntegration(
+    workspaceId: string,
+    intId: string,
+    updates: Partial<IntegrationConfig>
+  ): Promise<IntegrationConfig> {
+    const data = await apiFetch<{ integration: IntegrationConfig }>(
+      `/api/workspaces/${workspaceId}/integrations/${intId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      }
+    );
     return data.integration;
   },
 
   // --- AI ACTIONS ---
-  async draftFollowUp(workspaceId: string, leadId: string, step = 1): Promise<{ subject: string; message: string; reason: string }> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/ai/followup-draft`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId, step })
-    });
-    if (!res.ok) throw new Error('Failed to draft AI follow up');
-    return res.json();
+  async draftFollowUp(
+    workspaceId: string,
+    leadId: string,
+    step = 1
+  ): Promise<{ subject: string; message: string; reason: string }> {
+    return apiFetch<{ subject: string; message: string; reason: string }>(
+      `/api/workspaces/${workspaceId}/ai/followup-draft`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ leadId, step }),
+      }
+    );
   },
 
-  async draftReactivation(workspaceId: string, leadId: string): Promise<{ message: string; incentiveOffer: string }> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/ai/reactivate-draft`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leadId })
-    });
-    if (!res.ok) throw new Error('Failed to draft reactivation');
-    return res.json();
+  async draftReactivation(
+    workspaceId: string,
+    leadId: string
+  ): Promise<{ message: string; incentiveOffer: string }> {
+    return apiFetch<{ message: string; incentiveOffer: string }>(
+      `/api/workspaces/${workspaceId}/ai/reactivate-draft`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ leadId }),
+      }
+    );
   },
 
   async getAIInsights(workspaceId: string): Promise<{
     insights: { summary: string; actionItems: string[]; bottleneckAnalysis: string };
     metrics: Record<string, number>;
   }> {
-    const res = await fetch(`/api/workspaces/${workspaceId}/ai/insights`, {
-      method: 'POST'
+    return apiFetch(`/api/workspaces/${workspaceId}/ai/insights`, {
+      method: 'POST',
     });
-    if (!res.ok) throw new Error('Failed to generate AI insights');
-    return res.json();
   },
 
   // --- INBOUND WEBHOOK TEST TRIGGER ---
@@ -332,10 +375,10 @@ export const api = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-idempotency-key': `test_${Date.now()}`
+        'x-idempotency-key': `test_${Date.now()}`,
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
     return res.json();
-  }
+  },
 };

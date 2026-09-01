@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Workspace, UserRole, Lead, Notification } from '../types';
+import { Workspace, UserRole, Lead } from '../types';
 import { api } from '../services/api';
 import { DEMO_WORKSPACE } from '../data/demoSeedData';
 import { useNotification } from './NotificationContext';
+import { useAuth } from './AuthContext';
 
 export type AppView =
   | 'dashboard'
@@ -42,6 +43,7 @@ const WorkspaceContext = createContext<WorkspaceContextType | undefined>(undefin
 
 export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { showToast } = useNotification();
+  const { user } = useAuth();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([DEMO_WORKSPACE]);
   const [currentWorkspace, setCurrentWorkspace] = useState<Workspace>(DEMO_WORKSPACE);
   const [userRole, setUserRole] = useState<UserRole>('OWNER');
@@ -56,8 +58,13 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const wsList = await api.getWorkspaces();
       if (wsList && wsList.length > 0) {
         setWorkspaces(wsList);
-        const current = wsList.find((w) => w.id === currentWorkspace.id) || wsList[0];
-        setCurrentWorkspace(current);
+        // Find if currentWorkspace still exists in new list
+        const exists = wsList.find((w) => w.id === currentWorkspace.id);
+        if (exists) {
+          setCurrentWorkspace(exists);
+        } else {
+          setCurrentWorkspace(wsList[0]);
+        }
       }
     } catch (e) {
       console.warn('Could not fetch workspaces from server, using pre-seeded state:', e);
@@ -79,7 +86,7 @@ export const WorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   useEffect(() => {
     fetchWorkspacesList();
-  }, []);
+  }, [user, fetchWorkspacesList]);
 
   useEffect(() => {
     refreshUnreadNotifications();
