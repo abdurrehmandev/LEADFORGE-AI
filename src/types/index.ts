@@ -50,7 +50,9 @@ export interface WorkspaceInvitation {
   invitedBy: string;
   invitedByName: string;
   createdAt: string;
-  status: 'PENDING' | 'ACCEPTED' | 'REVOKED';
+  expiresAt: string;
+  tokenHash?: string;
+  status: 'PENDING' | 'ACCEPTED' | 'REVOKED' | 'EXPIRED';
 }
 
 export interface BusinessAIConfig {

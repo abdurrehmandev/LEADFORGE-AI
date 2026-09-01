@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
@@ -398,6 +399,11 @@ export class PersistentMultiTenantStorage {
     }
 
     const id = `inv_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const rawSecretToken = crypto.randomBytes(24).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(rawSecretToken).digest('hex');
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(); // 7 days expiration
+
     const invitation: WorkspaceInvitation = {
       id,
       workspaceId,
@@ -405,7 +411,9 @@ export class PersistentMultiTenantStorage {
       role,
       invitedBy: actorId,
       invitedByName: actorName,
-      createdAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
+      expiresAt,
+      tokenHash,
       status: 'PENDING',
     };
 
@@ -435,6 +443,16 @@ export class PersistentMultiTenantStorage {
     const inv = invMap?.get(invitationId);
     if (!inv || inv.status !== 'PENDING') {
       return { success: false, error: 'Invitation is invalid or has already been accepted.' };
+    }
+
+    // Verify expiration timestamp
+    if (inv.expiresAt && new Date(inv.expiresAt).getTime() < Date.now()) {
+      inv.status = 'EXPIRED';
+      const fs = getAdminFirestore();
+      if (fs) {
+        fs.collection('workspaces').doc(workspaceId).collection('invitations').doc(invitationId).update({ status: 'EXPIRED' }).catch(console.warn);
+      }
+      return { success: false, error: 'This invitation has expired. Please request a new invitation.' };
     }
 
     if (user.email && inv.email.toLowerCase() !== user.email.toLowerCase()) {

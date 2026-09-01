@@ -33,6 +33,11 @@ import {
   createInvitationSchema,
   webhookLeadSchema,
 } from './server/middleware/validate';
+import {
+  aiRateLimiter,
+  webhookRateLimiter,
+  invitationRateLimiter,
+} from './server/middleware/rateLimit';
 
 async function startServer() {
   const app = express();
@@ -46,9 +51,22 @@ async function startServer() {
     })
   );
 
+  // Production-grade CORS policy
+  const allowedOriginsEnv = process.env.ALLOWED_ORIGINS;
+  const allowedOrigins = allowedOriginsEnv
+    ? allowedOriginsEnv.split(',').map((s) => s.trim())
+    : ['http://localhost:3000', 'http://localhost:5173'];
+
   app.use(
     cors({
-      origin: true,
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (process.env.NODE_ENV !== 'production') return callback(null, true);
+        if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+          return callback(null, true);
+        }
+        return callback(new Error('Blocked by CORS policy'));
+      },
       credentials: true,
     })
   );
